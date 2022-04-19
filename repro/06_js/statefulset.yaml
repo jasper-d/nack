@@ -1,0 +1,210 @@
+---
+# Source: nats/templates/statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  namespace: default
+  labels:
+    helm.sh/chart: nats-0.15.1
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/instance: nats
+    app.kubernetes.io/version: "2.7.4"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+      app.kubernetes.io/instance: nats
+  replicas: 3
+  serviceName: nats
+
+  podManagementPolicy: Parallel
+
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: /metrics
+        prometheus.io/port: "7777"
+        prometheus.io/scrape: "true"
+        checksum/config: c6a953bdd595b3282d4ca6a31f010068495053e68b577ef83ef181a062beb778
+      labels:
+        app.kubernetes.io/name: nats
+        app.kubernetes.io/instance: nats
+    spec:
+      # Common volumes for the containers.
+      volumes:
+      - name: config-volume
+        configMap:
+          name: nats-config
+
+      # Local volume shared with the reloader.
+      - name: pid
+        emptyDir: {}
+
+      #################
+      #               #
+      #  TLS Volumes  #
+      #               #
+      #################
+      
+      - name: nats-server-tls-clients-volume
+        secret:
+          secretName: nats-server-tls
+
+      # Required to be able to HUP signal and apply config
+      # reload to the server without restarting the pod.
+      shareProcessNamespace: true
+
+      #################
+      #               #
+      #  NATS Server  #
+      #               #
+      #################
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: nats
+        image: nats:2.6.2-alpine
+        imagePullPolicy: IfNotPresent
+        resources:
+          {}
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 6222
+          name: cluster
+        - containerPort: 8222
+          name: monitor
+        - containerPort: 7777
+          name: metrics
+
+        command:
+        - "nats-server"
+        - "--config"
+        - "/etc/nats-config/nats.conf"
+
+        # Required to be able to define an environment variable
+        # that refers to other environment variables.  This env var
+        # is later used as part of the configuration file.
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: SERVER_NAME
+          value: $(POD_NAME)
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: CLUSTER_ADVERTISE
+          value: $(POD_NAME).nats.$(POD_NAMESPACE).svc.cluster.local
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/nats-config
+        - name: pid
+          mountPath: /var/run/nats
+        - name: nats-js-pvc
+          mountPath: /data/
+        #######################
+        #                     #
+        #  TLS Volumes Mounts #
+        #                     #
+        #######################
+        
+        - name: nats-server-tls-clients-volume
+          mountPath: /etc/nats-certs/clients/nats-server-tls
+
+        #######################
+        #                     #
+        # Healthcheck Probes  #
+        #                     #
+        #######################
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+          periodSeconds: 30
+          successThreshold: 1
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /
+            port: 8222
+          initialDelaySeconds: 10
+          timeoutSeconds: 5
+          periodSeconds: 10
+          successThreshold: 1
+          failureThreshold: 30
+
+        # Gracefully stop NATS Server on pod deletion or image upgrade.
+        #
+        lifecycle:
+          preStop:
+            exec:
+              # send the lame duck shutdown signal to trigger a graceful shutdown
+              # nats-server will ignore the TERM signal it receives after this
+              #
+              command:
+              - "nats-server"
+              - "-sl=ldm=/var/run/nats/nats.pid"
+
+      #################################
+      #                               #
+      #  NATS Configuration Reloader  #
+      #                               #
+      #################################
+      - name: reloader
+        image: natsio/nats-server-config-reloader:0.6.3
+        imagePullPolicy: IfNotPresent
+        command:
+        - "nats-server-config-reloader"
+        - "-pid"
+        - "/var/run/nats/nats.pid"
+        - "-config"
+        - "/etc/nats-config/nats.conf"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/nats-config
+        - name: pid
+          mountPath: /var/run/nats
+
+      ##############################
+      #                            #
+      #  NATS Prometheus Exporter  #
+      #                            #
+      ##############################
+      - name: metrics
+        image: natsio/prometheus-nats-exporter:0.9.1
+        imagePullPolicy: IfNotPresent
+        resources:
+          {}
+        args:
+        - -connz
+        - -routez
+        - -subz
+        - -varz
+        - -prefix=nats
+        - -use_internal_server_id
+        - -jsz=all
+        - http://localhost:8222/
+        ports:
+        - containerPort: 7777
+          name: metrics
+
+  volumeClaimTemplates:
+  #####################################
+  #                                   #
+  #  Jetstream New Persistent Volume  #
+  #                                   #
+  #####################################
+    - metadata:
+        name: nats-js-pvc
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
