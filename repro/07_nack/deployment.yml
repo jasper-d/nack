@@ -16,11 +16,18 @@ spec:
       serviceAccountName: jetstream-controller
       containers:
       - name: jsc
-        image: natsio/jetstream-controller:0.6.1
-        imagePullPolicy: Always
+        image: natsio/jetstream-controller:debug
+        imagePullPolicy: IfNotPresent
         command:
+        - /go/bin/dlv
+        - --listen=:9099
+        - --headless=true
+        - --api-version=2
+        - exec
         - /jetstream-controller
+        - --
         - -s=nats://nats:4222
+        - --crd-connect
         - --tlscert=/etc/nats/certs/tls.crt
         - --tlskey=/etc/nats/certs/tls.key
         - --tlsca=/etc/nats/certs/ca.crt

@@ -46,7 +46,8 @@ jetstream-controller: $(jetstreamSrc) vendor
 
 jetstream-controller.docker: $(jetstreamSrc) vendor
 	CGO_ENABLED=0 GOOS=linux go build -o $@ \
-		-ldflags "-s -w $(linkerVars)" \
+		-ldflags "$(linkerVars)" \
+		-gcflags "all=-N -l" \
 		-tags timetzdata \
 		github.com/nats-io/nack/cmd/jetstream-controller
 
